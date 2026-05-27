@@ -1,0 +1,15 @@
+﻿# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+backend/uploads/*.jpg
+backend/uploads/*.png
+backend/uploads/*.webp
+
+# Node
+frontend/node_modules/
+frontend/dist/
+
+# Env
+.env
