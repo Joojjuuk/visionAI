@@ -22,7 +22,7 @@ BACKEND = ROOT / "backend"
 STATIC = BACKEND / "static"
 
 
-def is_port_open(port: int = 11434) -> bool:
+def is_port_open(port: int) -> bool:
     """Check if the given port is open on localhost."""
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.settimeout(0.5)
@@ -31,7 +31,7 @@ def is_port_open(port: int = 11434) -> bool:
 
 def ensure_ollama_running() -> bool:
     """Ensure the Ollama local service is running. Starts it if offline."""
-    if is_port_open():
+    if is_port_open(11434):
         print("✓  Ollama is already running.")
         return True
 
@@ -52,7 +52,7 @@ def ensure_ollama_running() -> bool:
         # Wait up to 15 seconds for Ollama to boot
         for _ in range(30):
             time.sleep(0.5)
-            if is_port_open():
+            if is_port_open(11434):
                 print("✓  Ollama started successfully.")
                 return True
         print("✗  Ollama took too long to start. Please run 'ollama serve' manually.")
@@ -188,6 +188,15 @@ def main() -> None:
     args = parser.parse_args()
 
     print("🛡️  Checking system requirements...")
+
+    # Detect if the server is already active on port 8000
+    if is_port_open(8000):
+        print("\n💡  VisionAI server is already active on http://localhost:8000 !")
+        print("🚀  No need to start another instance. Just open http://localhost:8000 in your browser.")
+        if ensure_ollama_running():
+            ensure_llava_model()
+        return
+
     if ensure_ollama_running():
         ensure_llava_model()
 
