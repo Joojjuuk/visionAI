@@ -133,19 +133,53 @@ def build_frontend() -> None:
 def start_server() -> None:
     print("\n🚀  Starting VisionAI server at http://localhost:8000")
     print("Open your browser and navigate to: http://localhost:8000")
-    subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "uvicorn",
-            "app.main:app",
-            "--host",
-            "127.0.0.1",
-            "--port",
-            "8000",
-        ],
-        cwd=BACKEND,
-    )
+
+    # Search for uvicorn in common virtual environment locations
+    venv_paths = [
+        ROOT / ".venv" / "Scripts" / "uvicorn.exe",
+        ROOT / ".venv" / "bin" / "uvicorn",
+        BACKEND / ".venv" / "Scripts" / "uvicorn.exe",
+        BACKEND / ".venv" / "bin" / "uvicorn",
+    ]
+
+    uvicorn_cmd = None
+    for path in venv_paths:
+        if path.exists():
+            uvicorn_cmd = str(path)
+            print(f"✓  Using virtual environment uvicorn: {uvicorn_cmd}")
+            break
+
+    if not uvicorn_cmd:
+        # Fallback 1: check if uvicorn is in PATH as a command
+        if shutil.which("uvicorn"):
+            uvicorn_cmd = "uvicorn"
+        else:
+            # Fallback 2: fallback to global uvicorn command directly
+            uvicorn_cmd = "uvicorn"
+            print(
+                "⚠️  uvicorn not found in active virtual env. Trying global 'uvicorn' command..."
+            )
+
+    try:
+        # shell=True is critical on Windows to execute uvicorn via system PATH
+        subprocess.run(
+            [
+                uvicorn_cmd,
+                "app.main:app",
+                "--host",
+                "127.0.0.1",
+                "--port",
+                "8000",
+            ],
+            cwd=BACKEND,
+            shell=True if uvicorn_cmd == "uvicorn" else False,
+        )
+    except Exception as e:
+        print(f"\n✗  Failed to run uvicorn server: {e}")
+        print(
+            "Please make sure your Python virtual environment is active or uvicorn is installed."
+        )
+        print("You can also run directly: cd backend && uvicorn app.main:app")
 
 
 def main() -> None:
