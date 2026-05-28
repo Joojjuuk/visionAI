@@ -2,84 +2,103 @@ import logging
 from pathlib import Path
 from typing import Any
 
-from ultralytics import YOLO
+from ultralytics import YOLOWorld
 
 from app.config import settings
 
 logger = logging.getLogger(__name__)
 
+# Open-vocabulary classes prompted into YOLO-World.
+# "helmet" gives much higher detection confidence than "hard hat" on this model.
+_CLASSES = ["helmet", "person"]
+_PERSON_IDX = _CLASSES.index("person")
+_HELMET_IDX = _CLASSES.index("helmet")
+
+# Per-class minimum confidence: persons are detected reliably, helmets less so.
+_PERSON_CONF = 0.40
+_HELMET_CONF = 0.20
+
 
 class YOLOService:
-    """Singleton wrapper around Ultralytics YOLOv8 for person detection."""
+    """Singleton wrapper around YOLO-World for open-vocabulary detection.
+
+    On the same image, returns both person bboxes AND helmet bboxes — the
+    downstream pipeline matches helmets to persons by spatial overlap.
+    """
 
     def __init__(self) -> None:
-        self._model: YOLO | None = None
+        self._model: YOLOWorld | None = None
 
     def load(self) -> None:
-        """Load the model into memory (called once at startup)."""
         if self._model is None:
-            self._model = YOLO(settings.yolo_model)
-            logger.info("YOLO model '%s' loaded into memory.", settings.yolo_model)
+            self._model = YOLOWorld(settings.yolo_model)
+            self._model.set_classes(_CLASSES)
+            logger.info(
+                "YOLO-World loaded — model='%s' classes=%s",
+                settings.yolo_model, _CLASSES,
+            )
 
     def is_loaded(self) -> bool:
         return self._model is not None
 
-    def detect_people(self, image_path: Path) -> list[dict[str, Any]]:
+    def detect(self, image_path: Path) -> dict[str, list[dict[str, Any]]]:
         """
-        Run inference on *image_path* and return a list of person detections.
+        Run inference and return a dict with 'persons' and 'helmets' lists.
 
-        Each detection is a dict:
-            {
-                "id":         int,    # 1-based index
-                "x":          float,  # left edge, % of image width
-                "y":          float,  # top edge, % of image height
-                "w":          float,  # width,    % of image width
-                "h":          float,  # height,   % of image height
-                "confidence": float,  # [0, 1]
-                "x_abs":      int,    # pixel left
-                "y_abs":      int,    # pixel top
-                "w_abs":      int,    # pixel width
-                "h_abs":      int,    # pixel height
-            }
+        Each entry has the shape used by the rest of the pipeline:
+            {id, x%, y%, w%, h%, confidence, x_abs, y_abs, w_abs, h_abs}
+        Helmet entries don't get an "id" field (they're matched to persons later).
         """
         if self._model is None:
             self.load()
 
-        # classes=[0] restricts detection to "person" (COCO class 0)
+        # Run with the lowest threshold; we filter per class below.
         results = self._model(  # type: ignore[misc]
             str(image_path),
-            classes=[0],
-            conf=settings.confidence_threshold,
+            conf=min(_PERSON_CONF, _HELMET_CONF),
             verbose=False,
         )
 
-        detections: list[dict[str, Any]] = []
+        persons: list[dict[str, Any]] = []
+        helmets: list[dict[str, Any]] = []
+
         for result in results:
             img_h, img_w = result.orig_shape
-            for idx, box in enumerate(result.boxes, start=1):
+            for box in result.boxes:
+                cls_id = int(box.cls[0])
+                conf = float(box.conf[0])
                 x1, y1, x2, y2 = (int(v) for v in box.xyxy[0].tolist())
                 w_abs = x2 - x1
                 h_abs = y2 - y1
+                entry: dict[str, Any] = {
+                    "x":          round(x1 / img_w * 100, 2),
+                    "y":          round(y1 / img_h * 100, 2),
+                    "w":          round(w_abs / img_w * 100, 2),
+                    "h":          round(h_abs / img_h * 100, 2),
+                    "confidence": round(conf, 3),
+                    "x_abs":      x1,
+                    "y_abs":      y1,
+                    "w_abs":      w_abs,
+                    "h_abs":      h_abs,
+                }
+                if cls_id == _PERSON_IDX and conf >= _PERSON_CONF:
+                    persons.append(entry)
+                elif cls_id == _HELMET_IDX and conf >= _HELMET_CONF:
+                    helmets.append(entry)
 
-                detections.append(
-                    {
-                        "id": idx,
-                        "x": round(x1 / img_w * 100, 2),
-                        "y": round(y1 / img_h * 100, 2),
-                        "w": round(w_abs / img_w * 100, 2),
-                        "h": round(h_abs / img_h * 100, 2),
-                        "confidence": round(float(box.conf[0]), 3),
-                        # Absolute pixel coords kept for the crop step
-                        "x_abs": x1,
-                        "y_abs": y1,
-                        "w_abs": w_abs,
-                        "h_abs": h_abs,
-                    }
-                )
+        # Assign 1-based IDs to persons in detection order.
+        for i, p in enumerate(persons, start=1):
+            p["id"] = i
 
-        logger.info("YOLO detected %d person(s) in '%s'.", len(detections), image_path.name)
-        return detections
+        logger.info(
+            "YOLO-World — %d person(s), %d helmet(s) in '%s'",
+            len(persons), len(helmets), image_path.name,
+        )
+        return {"persons": persons, "helmets": helmets}
+
+    # Backwards-compatibility shim — pipeline used to call detect_people().
+    def detect_people(self, image_path: Path) -> list[dict[str, Any]]:
+        return self.detect(image_path)["persons"]
 
 
-# Module-level singleton — imported by other services
 yolo_service = YOLOService()

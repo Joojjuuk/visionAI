@@ -4,10 +4,23 @@ from typing import Any
 
 from PIL import Image
 
-from app.services.llava_service import analyze_worker_epi
+from app.config import settings
 from app.services.yolo_service import yolo_service
 
 logger = logging.getLogger(__name__)
+
+
+def _get_analyzer():
+    """Pick the EPI classifier backend based on settings.detection_mode."""
+    if settings.detection_mode == "ollama":
+        from app.services.ollama_service import analyze_worker_epi
+        return analyze_worker_epi, "ollama"
+    from app.services.llava_service import analyze_worker_epi
+    return analyze_worker_epi, "yolo"
+
+
+analyze_worker_epi, _backend_name = _get_analyzer()
+logger.info("[pipeline] EPI classifier backend: %s", _backend_name)
 
 
 async def run_pipeline(image_path: Path) -> dict[str, Any]:
@@ -19,22 +32,27 @@ async def run_pipeline(image_path: Path) -> dict[str, Any]:
 
     Returns a dict ready to be serialised as JSON by the API router.
     """
-    # ── Step 1: detect persons ───────────────────────────────────────────────
-    logger.info("[pipeline] Step 1 — YOLOv8 person detection")
-    raw_detections = yolo_service.detect_people(image_path)
+    # ── Step 1: detect persons + helmets (open-vocabulary YOLO) ──────────────
+    logger.info("[pipeline] Step 1 — YOLO-World detection (person + helmet)")
+    detection = yolo_service.detect(image_path)
+    persons = detection["persons"]
+    helmets = detection["helmets"]
 
-    if not raw_detections:
+    if not persons:
         logger.info("[pipeline] No persons detected — returning empty result.")
         img = Image.open(image_path)
         return _build_response([], img.size)
 
-    logger.info("[pipeline] %d person(s) found — querying LLaVA for each", len(raw_detections))
+    logger.info(
+        "[pipeline] %d person(s) and %d helmet(s) found — classifying EPI",
+        len(persons), len(helmets),
+    )
 
     # ── Step 2: EPI analysis per person ─────────────────────────────────────
     detections: list[dict[str, Any]] = []
-    for det in raw_detections:
+    for det in persons:
         logger.info("[pipeline] Step 2 — analysing worker #%02d", det["id"])
-        epi = await analyze_worker_epi(image_path, det, det["id"])
+        epi = await analyze_worker_epi(image_path, det, helmets, det["id"])
         detections.append(
             {
                 "id": det["id"],

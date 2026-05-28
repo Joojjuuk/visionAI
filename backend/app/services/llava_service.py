@@ -1,184 +1,124 @@
-import base64
-import io
-import json
+"""
+PPE classification per person.
+
+Hybrid strategy after extensive empirical testing:
+  - Helmet: YOLO-World detections from yolo_service. Hi-confidence,
+    generalises across colours and image styles.
+  - Vest:   HSV colour analysis on the torso region. Hi-vis safety vests
+    are specifically engineered to be chromatically distinctive, so this
+    is faster and more reliable than open-vocabulary detection (which we
+    confirmed empirically fails on vests).
+
+The async function signature is preserved so `pipeline.py` doesn't change
+beyond passing the helmet detection list through.
+"""
 import logging
-import re
 from pathlib import Path
 from typing import Any
 
-import httpx
-from PIL import Image
-
-from app.config import settings
+import cv2
+import numpy as np
 
 logger = logging.getLogger(__name__)
 
-# NOTE: Do NOT include a JSON example with pre-filled values in the prompt.
-# LLaVA will copy the example values literally, causing systematic false negatives.
-_EPI_PROMPT = """You are a construction site safety inspector. Your task is PPE compliance detection.
 
-Look at this image of a construction worker and answer TWO questions:
-
-1. HARD HAT / HELMET: Is the person wearing a safety helmet on their head?
-   - Safety helmets can be white, yellow, orange, blue, red, or any other color
-   - If you see a hard hat on the head -> helmet is true
-   - If the head is bare (no hat at all) -> helmet is false
-
-2. REFLECTIVE VEST: Is the person wearing a high-visibility safety vest?
-   - Safety vests are typically orange or yellow with reflective strips
-   - If you see a reflective/hi-vis vest on the torso -> vest is true
-   - If the person only wears a regular shirt/jacket with no vest -> vest is false
-
-Look carefully at EACH item independently. Base your answer only on what you can see.
-
-Your response must be ONLY a JSON object with boolean values (no text, no explanation):"""
-
-# ─── Response parsers ─────────────────────────────────────────────────────────
-_JSON_OBJ_RE  = re.compile(r'\{[^{}]*"helmet"[^{}]*\}', re.DOTALL | re.IGNORECASE)
-_HELMET_RE    = re.compile(r'"helmet"\s*:\s*(true|false)', re.IGNORECASE)
-_VEST_RE      = re.compile(r'"vest"\s*:\s*(true|false)',   re.IGNORECASE)
+# ── Helpers ─────────────────────────────────────────────────────────────────
+def _crop(img: np.ndarray, x: int, y: int, w: int, h: int) -> np.ndarray:
+    ih, iw = img.shape[:2]
+    x1 = max(0, x)
+    y1 = max(0, y)
+    x2 = min(iw, x + w)
+    y2 = min(ih, y + h)
+    if x2 <= x1 or y2 <= y1:
+        return np.zeros((0, 0, 3), dtype=np.uint8)
+    return img[y1:y2, x1:x2]
 
 
-def _parse_epi_response(raw: str) -> dict[str, bool]:
+def _ratio(hsv: np.ndarray, lo: np.ndarray, hi: np.ndarray) -> float:
+    if hsv.size == 0:
+        return 0.0
+    mask = cv2.inRange(hsv, lo, hi)
+    return float(mask.sum() / 255 / mask.size)
+
+
+# ── Helmet matching ─────────────────────────────────────────────────────────
+def _helmet_overlaps_person_head(
+    person: dict[str, Any], helmet: dict[str, Any]
+) -> bool:
     """
-    Multi-strategy parser for LLaVA JSON output.
-    Strategy 1: Full JSON object extraction.
-    Strategy 2: Per-field regex extraction.
-    Strategy 3: Keyword scan (EN + PT-BR).
+    A helmet detection is associated with a person when the helmet centre
+    falls inside the person's upper region (head/shoulders zone — top 35%
+    of the person bbox, with a small slack above the bbox top).
     """
-    logger.debug("LLaVA raw response: %r", raw)
+    px, py, pw, ph = person["x_abs"], person["y_abs"], person["w_abs"], person["h_abs"]
+    head_top = py - int(ph * 0.10)
+    head_bot = py + int(ph * 0.35)
+    head_left = px - int(pw * 0.10)
+    head_right = px + pw + int(pw * 0.10)
 
-    # Strategy 1 — full JSON object containing both keys
-    m = _JSON_OBJ_RE.search(raw)
-    if m:
-        try:
-            cleaned = m.group().replace("'", '"')
-            cleaned = re.sub(r",\s*}", "}", cleaned)
-            data = json.loads(cleaned)
-            return {
-                "helmet": bool(data.get("helmet", False)),
-                "vest":   bool(data.get("vest",   False)),
-            }
-        except (json.JSONDecodeError, ValueError):
-            pass
+    hx = helmet["x_abs"] + helmet["w_abs"] // 2
+    hy = helmet["y_abs"] + helmet["h_abs"] // 2
+    return head_left <= hx <= head_right and head_top <= hy <= head_bot
 
-    # Strategy 2 — extract individual key:value pairs
-    hm = _HELMET_RE.search(raw)
-    vm = _VEST_RE.search(raw)
-    if hm or vm:
-        return {
-            "helmet": hm.group(1).lower() == "true" if hm else False,
-            "vest":   vm.group(1).lower() == "true" if vm else False,
-        }
 
-    # Strategy 3 — keyword scan (EN + PT-BR)
-    lower = raw.lower()
-    helmet_pos = any(k in lower for k in [
-        "wearing a helmet", "wearing a hard hat", "has a helmet", "has a hard hat",
-        "helmet on", "hard hat on", "safety helmet", "helmet visible",
-        "usa capacete", "com capacete", "tem capacete",
-    ])
-    helmet_neg = any(k in lower for k in [
-        "no helmet", "no hard hat", "without helmet", "not wearing a helmet",
-        "not wearing a hard hat", "sem capacete", "nao usa capacete",
-    ])
-    vest_pos = any(k in lower for k in [
-        "wearing a vest", "safety vest", "high-visibility", "hi-vis",
-        "reflective vest", "wearing a reflective",
-        "usa colete", "com colete", "tem colete", "colete refletivo",
-    ])
-    vest_neg = any(k in lower for k in [
-        "no vest", "no safety vest", "without vest", "not wearing a vest",
-        "sem colete", "nao usa colete",
-    ])
+# ── Vest detection (HSV) ────────────────────────────────────────────────────
+_VEST_ORANGE_LO = np.array([5, 130, 130])
+_VEST_ORANGE_HI = np.array([22, 255, 255])
+_VEST_YELLOW_LO = np.array([22, 100, 180])
+_VEST_YELLOW_HI = np.array([45, 255, 255])
+_VEST_LIME_LO   = np.array([45, 100, 180])
+_VEST_LIME_HI   = np.array([75, 255, 255])
 
-    result = {
-        "helmet": helmet_pos and not helmet_neg,
-        "vest":   vest_pos   and not vest_neg,
+
+def _detect_vest(img_rgb: np.ndarray, person: dict[str, Any]) -> tuple[bool, dict[str, float]]:
+    """Hi-vis torso check. Returns (is_vest, debug_ratios)."""
+    x, y, w, h = person["x_abs"], person["y_abs"], person["w_abs"], person["h_abs"]
+    top = y + int(h * 0.15)
+    bot = y + int(h * 0.55)
+    left = x + int(w * 0.10)
+    right = x + w - int(w * 0.10)
+
+    torso = _crop(img_rgb, left, top, right - left, bot - top)
+    if torso.size == 0:
+        return False, {}
+
+    hsv = cv2.cvtColor(torso, cv2.COLOR_RGB2HSV)
+    ratios = {
+        "orange": _ratio(hsv, _VEST_ORANGE_LO, _VEST_ORANGE_HI),
+        "yellow": _ratio(hsv, _VEST_YELLOW_LO, _VEST_YELLOW_HI),
+        "lime":   _ratio(hsv, _VEST_LIME_LO,   _VEST_LIME_HI),
     }
-    logger.debug("Parser strategy 3 (keywords): %s | raw: %r", result, raw[:200])
-    return result
+    total = ratios["orange"] + ratios["yellow"] + ratios["lime"]
+    return total > 0.15, ratios
 
 
-def _crop_to_base64(image_path: Path, bbox: dict[str, Any]) -> str:
-    """
-    Crop the worker region with generous padding:
-    - 20% horizontal padding
-    - 30% extra headroom above (to capture helmets)
-    - 15% below
-    Upscale small crops to ensure LLaVA has enough pixels to inspect details.
-    """
-    with Image.open(image_path) as img:
-        img_w, img_h = img.size
-        x, y, w, h = bbox["x_abs"], bbox["y_abs"], bbox["w_abs"], bbox["h_abs"]
-
-        pad_x        = int(w * 0.20)
-        pad_y_top    = int(h * 0.30)  # extra headroom for helmets
-        pad_y_bottom = int(h * 0.15)
-
-        left   = max(0,     x - pad_x)
-        top    = max(0,     y - pad_y_top)
-        right  = min(img_w, x + w + pad_x)
-        bottom = min(img_h, y + h + pad_y_bottom)
-
-        crop = img.crop((left, top, right, bottom)).convert("RGB")
-
-        # Upscale small crops so LLaVA has enough pixels to see details
-        cw, ch = crop.size
-        min_side = 336  # LLaVA optimal input patch size
-        if cw < min_side or ch < min_side:
-            scale = max(min_side / cw, min_side / ch)
-            crop = crop.resize((int(cw * scale), int(ch * scale)), Image.LANCZOS)
-
-    buf = io.BytesIO()
-    crop.save(buf, format="JPEG", quality=90)
-    return base64.b64encode(buf.getvalue()).decode()
-
-
+# ── Public API ──────────────────────────────────────────────────────────────
 async def analyze_worker_epi(
     image_path: Path,
-    bbox: dict[str, Any],
+    person: dict[str, Any],
+    helmets: list[dict[str, Any]],
     worker_id: int,
 ) -> dict[str, bool]:
     """
-    Send a cropped worker image to LLaVA via Ollama and return EPI status.
-    Uses /api/generate with format:json.
+    Classify a single worker's PPE status.
+
+    Args:
+        image_path:  path to the original uploaded image.
+        person:      a person bbox from yolo_service.detect().
+        helmets:     list of helmet bboxes from the SAME detection call.
+        worker_id:   sequential worker id for logging.
     """
-    b64 = _crop_to_base64(image_path, bbox)
+    img_bgr = cv2.imread(str(image_path))
+    if img_bgr is None:
+        raise RuntimeError(f"Cannot read image: {image_path}")
+    img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
 
-    payload = {
-        "model": settings.llava_model,
-        "prompt": _EPI_PROMPT,
-        "images": [b64],
-        "format": "json",   # Force Ollama to output valid JSON structure
-        "stream": False,
-        "options": {
-            "temperature": 0.0,   # Deterministic — minimize hallucination
-            "num_predict": 80,    # Only need {"helmet":X,"vest":X}
-        },
-    }
+    helmet = any(_helmet_overlaps_person_head(person, hm) for hm in helmets)
+    vest, vest_ratios = _detect_vest(img_rgb, person)
 
-    url = f"{settings.ollama_url}/api/generate"
-
-    try:
-        async with httpx.AsyncClient(timeout=120.0) as client:
-            response = await client.post(url, json=payload)
-            response.raise_for_status()
-            data = response.json()
-            raw_text: str = data.get("response", "")
-    except httpx.ConnectError as exc:
-        logger.error("Failed to connect to Ollama: %s", exc)
-        raise RuntimeError("Ollama não está rodando. Por favor inicie o Ollama (ollama serve).") from exc
-    except httpx.HTTPError as exc:
-        logger.error("Ollama HTTP Error for worker %d: %s", worker_id, exc)
-        raise RuntimeError(f"Erro na requisição para o Ollama: {exc}") from exc
-
-    result = _parse_epi_response(raw_text)
     logger.info(
-        "Worker %02d — helmet=%-5s  vest=%-5s  | raw: %r",
-        worker_id,
-        result["helmet"],
-        result["vest"],
-        raw_text[:80],
+        "Worker %02d — helmet=%-5s vest=%-5s  | vest_ratios=%s",
+        worker_id, helmet, vest,
+        {k: round(v, 3) for k, v in vest_ratios.items()},
     )
-    return result
+    return {"helmet": helmet, "vest": vest}

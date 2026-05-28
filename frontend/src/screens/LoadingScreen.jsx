@@ -50,7 +50,7 @@ export default function LoadingScreen({ file, onDone }) {
 
     addLog("brand", "→ carregando modelos locais…", 0);
     addLog("ok",    "  yolov8n.pt  pronto",          300);
-    addLog("ok",    "  llava:7b    ollama-served",    600);
+    addLog("ok",    "  llama3.2-vision ollama-served", 600);
     addLog("brand", "▶ executando yolov8.detect()",  900);
 
     // ── Real API call ──────────────────────────────────────────────────────

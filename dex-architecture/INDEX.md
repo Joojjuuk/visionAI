@@ -38,7 +38,8 @@ System changes triggered by code edits. Format: `CHG-YYYYMMDD-componente.md`.
 
 | CHG | Component | Date |
 |-----|-----------|------|
-| _(none yet — first Edit/Write will create one)_ | — | — |
+| [CHG-20260528-api-surface.md](changes/CHG-20260528-api-surface.md) | `api-surface` | 20260528 |
+| [CHG-20260528-c.md](changes/CHG-20260528-c.md) | `c` | 20260528 |
 
 ---
 

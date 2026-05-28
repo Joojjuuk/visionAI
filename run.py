@@ -72,7 +72,7 @@ def ensure_ollama_running() -> bool:
 
 def ensure_llava_model() -> bool:
     """Check if the LLaVA model is downloaded. Pulls it if absent."""
-    model_name = "llava:7b"
+    model_name = "gemma3:4b"
     try:
         req = urllib.request.urlopen("http://127.0.0.1:11434/api/tags", timeout=5)
         data = json.loads(req.read().decode("utf-8"))
@@ -192,20 +192,35 @@ def start_server() -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description="VisionAI launcher")
     parser.add_argument("--dev", action="store_true", help="Skip frontend build")
+    parser.add_argument(
+        "--ollama",
+        action="store_true",
+        help="Use the Ollama VLM backend instead of YOLO-World",
+    )
     args = parser.parse_args()
 
-    print("🛡️  Checking system requirements...")
+    use_ollama = args.ollama or os.environ.get("DETECTION_MODE", "").lower() == "ollama"
+    if use_ollama:
+        os.environ["DETECTION_MODE"] = "ollama"
+        print("🛡️  Detection mode: OLLAMA (gemma3:4b)")
+    else:
+        print("🛡️  Detection mode: YOLO-World (default; pass --ollama to switch)")
+
+    print("Checking system requirements...")
 
     # Detect if the server is already active on port 8000
     if is_port_open(8000):
         print("\n💡  VisionAI server is already active on http://localhost:8000 !")
         print("🚀  No need to start another instance. Just open http://localhost:8000 in your browser.")
-        if ensure_ollama_running():
+        if use_ollama and ensure_ollama_running():
             ensure_llava_model()
         return
 
-    if ensure_ollama_running():
-        ensure_llava_model()
+    if use_ollama:
+        if ensure_ollama_running():
+            ensure_llava_model()
+    else:
+        print("✓  Ollama not needed in YOLO mode — skipping checks.")
 
     if not args.dev:
         build_frontend()
