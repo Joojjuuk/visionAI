@@ -108,10 +108,26 @@ def build_frontend() -> None:
         sys.exit(1)
 
     dist = FRONTEND / "dist"
-    if STATIC.exists():
-        shutil.rmtree(STATIC)
-    shutil.copytree(dist, STATIC)
-    print(f"✓  Frontend build copied to {STATIC}")
+    try:
+        # Robust cleanup: try to delete individual files without crashing on locked directories
+        if STATIC.exists():
+            for item in STATIC.iterdir():
+                try:
+                    if item.is_file():
+                        item.unlink()
+                    elif item.is_dir():
+                        shutil.rmtree(item)
+                except Exception:
+                    pass  # locked by running uvicorn instances, skip gracefully
+
+        # Copy the new assets merging with existing
+        shutil.copytree(dist, STATIC, dirs_exist_ok=True)
+        print(f"✓  Frontend build copied to {STATIC}")
+    except Exception as e:
+        print(f"\n⚠️  Warning while copying assets: {e}")
+        print("This is normal if uvicorn is running in another terminal.")
+        print("Please close any other running python/uvicorn processes and run again.")
+        print("Continuing launcher run...")
 
 
 def start_server() -> None:
