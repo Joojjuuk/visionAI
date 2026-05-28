@@ -166,13 +166,16 @@ async def analyze_worker_epi(
             response.raise_for_status()
             data = response.json()
             raw_text: str = data.get("response", "")
+    except httpx.ConnectError as exc:
+        logger.error("Failed to connect to Ollama: %s", exc)
+        raise RuntimeError("Ollama não está rodando. Por favor inicie o Ollama (ollama serve).") from exc
     except httpx.HTTPError as exc:
-        logger.error("Ollama request failed for worker %d: %s", worker_id, exc)
-        return {"helmet": False, "vest": False}
+        logger.error("Ollama HTTP Error for worker %d: %s", worker_id, exc)
+        raise RuntimeError(f"Erro na requisição para o Ollama: {exc}") from exc
 
     result = _parse_epi_response(raw_text)
     logger.info(
-        "Worker %02d — helmet=%s  vest=%s  (raw: %r)",
+        "Worker %02d — helmet=%-5s  vest=%-5s  | raw: %r",
         worker_id,
         result["helmet"],
         result["vest"],
