@@ -16,6 +16,13 @@ import time
 import urllib.request
 from pathlib import Path
 
+# Force UTF-8 encoding for standard output to avoid UnicodeEncodeErrors on Windows terminals
+if sys.stdout.encoding != "utf-8":
+    try:
+        sys.stdout.reconfigure(encoding="utf-8")
+    except Exception:
+        pass
+
 ROOT = Path(__file__).parent
 FRONTEND = ROOT / "frontend"
 BACKEND = ROOT / "backend"
