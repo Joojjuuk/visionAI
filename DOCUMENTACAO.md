@@ -1,21 +1,34 @@
-# VisionAI — Documentação Técnica
+# VisionAI — Documentação Técnica / Especificação
 
-Sistema web local de detecção de EPI (Equipamento de Proteção Individual) em fotos de obra. O usuário envia uma imagem pelo navegador, o backend processa com IA rodando 100% local, e retorna a imagem anotada com o status de conformidade de cada trabalhador.
+Sistema web de detecção de EPI (Equipamento de Proteção Individual) em fotos de canteiro
+de obras. O usuário envia uma imagem pelo navegador; o backend executa um **pipeline
+híbrido** — detecção geométrica **local** (YOLOv8 / YOLO-World) seguida de classificação
+**na nuvem** (Google Gemini 2.5 Flash) — e devolve a imagem anotada com o status de
+conformidade de EPI de cada trabalhador.
+
+> **Arquitetura atual:** `YOLOv8 (local) + Google Gemini 2.5 Flash (nuvem)`.
+> A versão anterior usava Ollama/LLaVA 100% local; isso foi substituído (ver §10).
 
 ---
 
-## 1. O que o projeto faz
+## 1. O que o sistema faz
 
 Dada uma foto de canteiro de obras:
 
-1. Detecta **todas as pessoas** na imagem usando YOLO-World.
-2. Para cada pessoa, verifica se ela está usando:
-   - **Capacete de segurança** (qualquer cor)
-   - **Colete refletivo / hi-vis** (laranja, amarelo, lime)
-3. Retorna a imagem original com cada pessoa marcada:
-   - **Verde** = EPI completo (capacete + colete)
-   - **Vermelho** = EPI incompleto, com descrição do que falta
-4. Mostra estatísticas: total de pessoas, em conformidade, sem EPI, percentual de conformidade da cena.
+1. Detecta **todas as pessoas** na imagem usando **YOLO-World** (open-vocabulary), de forma
+   local e instantânea.
+2. Para cada pessoa, recorta a região (cabeça + torso) e pede ao **Google Gemini 2.5 Flash**
+   uma classificação estruturada de 4 itens:
+   - **Capacete** (`helmet`) — EPI obrigatório
+   - **Colete refletivo / hi-vis** (`vest`) — EPI obrigatório
+   - **Óculos de proteção** (`glasses`) — EPI obrigatório
+   - **Boné** (`cap`) — **alerta de risco** (boné sob/no lugar do capacete)
+3. Marca cada pessoa na imagem:
+   - **Verde (CONFORME)** = capacete **e** colete **e** óculos, **sem** boné
+   - **Vermelho (INCOMPLETO)** = falta algum EPI; o sistema lista o que falta
+   - **Âmbar (ALERTA · BONÉ)** = uso de boné sinalizado como risco
+4. Mostra estatísticas da cena: total de pessoas, conformes, sem EPI, percentual de
+   conformidade e confiança média de detecção.
 
 ---
 
@@ -30,378 +43,327 @@ Dada uma foto de canteiro de obras:
 │  - LoadingScreen           │
 │  - ResultsScreen           │
 └──────────────┬─────────────┘
-               │ HTTP POST /api/analyze
+               │ HTTP POST /api/analyze  (multipart)
                ▼
 ┌────────────────────────────┐
-│  Backend (FastAPI)         │  uvicorn :8000
+│  Backend (FastAPI/uvicorn) │  :8000
 │  - /api/status             │
 │  - /api/analyze            │
 │  - /uploads/{file}         │
-│  - / (static frontend)     │
+│  - / (SPA estática)        │
 └──────────────┬─────────────┘
                │
                ▼
-┌────────────────────────────┐
-│  Pipeline                  │
-│  yolo_service              │
-│   ├─ detecta pessoas       │
-│   └─ detecta capacetes     │
-│  llava_service OR          │
-│  ollama_service            │
-│   └─ classifica EPI/pessoa │
-└────────────────────────────┘
+┌────────────────────────────────────────────────┐
+│  Pipeline (pipeline.py)                         │
+│                                                  │
+│  1. yolo_service  ── LOCAL ──┐                   │
+│     detecta pessoas+capacetes│                   │
+│                              ▼                    │
+│  2. classificador por pessoa (intercambiável):   │
+│     ├─ gemini_service  ── NUVEM (padrão) ──►  Google Gemini 2.5 Flash
+│     │    crop → Base64 → REST + JSON Schema       (generativelanguage API)
+│     └─ local_cv_service ── LOCAL (fallback)       capacete(YOLO)+colete(HSV)
+│                                                  │
+│  3. consolida → JSON (detections + stats)        │
+└──────────────────────────────────────────────────┘
 ```
 
 ### 2.2 Backend — stack
 
-- **Python 3.12+**
-- **FastAPI** + **uvicorn** — API HTTP
-- **Ultralytics YOLO-World** — detecção open-vocabulary (`yolov8l-world.pt`, 91 MB)
-- **OpenCV** + **NumPy** — análise HSV para coletes hi-vis
-- **Pillow** — manipulação de imagem
-- **httpx** — chamadas ao Ollama (modo opcional)
-- **Ollama** + **gemma3:4b** — modelo de visão local (modo opcional)
+| Tecnologia | Papel |
+| ---------- | ----- |
+| **Python 3.12** | runtime |
+| **FastAPI** + **uvicorn** | API HTTP assíncrona |
+| **Ultralytics YOLO-World** (`yolov8l-world.pt`, ~91 MB) | detecção open-vocabulary local de pessoa/capacete |
+| **httpx** (async) | chamada REST ao Google Gemini |
+| **Pillow** | recorte/encode (Base64 JPEG) da região do trabalhador |
+| **OpenCV** + **NumPy** | análise HSV de colete no modo offline (`local_cv_service`) |
+| **pydantic-settings** | configuração via `.env` / variáveis de ambiente |
 
 ### 2.3 Frontend — stack
 
-- **React 19** + **Vite 8**
-- 3 telas: Upload → Loading → Results
-- Bounding boxes desenhadas via SVG sobre a imagem
-- Painel lateral com lista de trabalhadores e estatísticas
+- **React 19** + **Vite 8** (SPA buildada e servida pelo próprio FastAPI em `/`)
+- 3 telas: **Upload → Loading → Results**
+- Bounding boxes posicionadas em **porcentagem** sobre a imagem (independem do tamanho de exibição)
+- Painel lateral com lista de trabalhadores (4 chips de EPI) e estatísticas
+- Tema claro/escuro e ajustes (estilo de marcação, rótulos) via `TweaksPanel`
 
 ### 2.4 Estrutura de pastas
 
 ```
 visionai/
-├─ run.py                     # launcher único: checa deps, builda frontend, sobe servidor
+├─ run.py                       # launcher único: builda frontend + sobe servidor
 ├─ backend/
 │  ├─ requirements.txt
-│  ├─ yolov8l-world.pt        # modelo YOLO-World (baixado no primeiro run)
-│  ├─ uploads/                # imagens enviadas (geradas em runtime)
-│  ├─ static/                 # build do frontend servido na raiz
+│  ├─ .env                      # DETECTION_MODE + GEMINI_API_KEY (NÃO versionado)
+│  ├─ yolov8l-world.pt          # modelo YOLO-World (baixa no 1º run)
+│  ├─ uploads/                  # imagens enviadas (runtime)
+│  ├─ static/                   # build do frontend servido na raiz
 │  └─ app/
-│     ├─ main.py              # FastAPI app, CORS, mounts estáticos
-│     ├─ config.py            # pydantic_settings com env vars
-│     ├─ api/
-│     │  └─ router.py         # endpoints /api/status e /api/analyze
+│     ├─ main.py                # FastAPI, CORS, mounts, startup (carrega YOLO)
+│     ├─ config.py              # Settings (pydantic) — defaults e env
+│     ├─ api/router.py          # /api/status e /api/analyze
 │     └─ services/
-│        ├─ pipeline.py       # orquestra: YOLO → classificador → resposta
-│        ├─ yolo_service.py   # YOLO-World detection (pessoa + capacete)
-│        ├─ llava_service.py  # modo YOLO: helmet via YOLO-World + vest via HSV
-│        └─ ollama_service.py # modo Ollama: VLM gemma3:4b por trabalhador
+│        ├─ pipeline.py         # orquestra: YOLO → classificador → resposta
+│        ├─ yolo_service.py     # YOLO-World (pessoa + capacete)
+│        ├─ gemini_service.py   # NUVEM: Gemini 2.5 Flash, JSON Schema, retry
+│        └─ local_cv_service.py # OFFLINE: capacete (YOLO) + colete (HSV)
 └─ frontend/
-   ├─ package.json
-   ├─ vite.config.js
+   ├─ package.json · vite.config.js
    └─ src/
       ├─ App.jsx
-      ├─ screens/UploadScreen.jsx
-      ├─ screens/LoadingScreen.jsx
-      ├─ screens/ResultsScreen.jsx
-      └─ components/BoundingBoxes.jsx, TopBar.jsx, ...
+      ├─ screens/{UploadScreen,LoadingScreen,ResultsScreen}.jsx
+      └─ components/{BoundingBoxes,Icons,TopBar,TweaksPanel}.jsx
 ```
 
 ---
 
-## 3. Dois modos de detecção
+## 3. Dois modos de classificação
 
-O projeto entrega dois backends de classificação intercambiáveis, escolhidos pela variável `DETECTION_MODE` (ou flag `--ollama` no launcher).
+O backend de classificação é escolhido por `DETECTION_MODE` (ou flag no launcher).
+A etapa de **detecção de pessoas (YOLO-World)** é sempre local em ambos os modos.
 
-### 3.1 Modo YOLO (default — recomendado)
+### 3.1 Modo Gemini (PADRÃO)
 
-**Como funciona**
+`DETECTION_MODE=gemini` · `python run.py`
 
-1. YOLO-World é prompted com as classes `["helmet", "person"]` e roda **uma única vez** sobre a imagem inteira.
-2. Para cada pessoa detectada:
-   - **Helmet** = `True` se algum bbox de capacete do YOLO-World tem seu centro dentro da zona da cabeça da pessoa (topo do bbox da pessoa + folga).
-   - **Vest** = análise de cor HSV no torso. Conta a fração de pixels em ranges hi-vis (laranja `H 5-22`, amarelo `H 22-45`, lime `H 45-75`) com alta saturação. Se total > 15%, considera colete presente.
+**Como funciona** — para cada pessoa detectada pelo YOLO:
+1. `gemini_service._crop_worker_b64` recorta a região com folga (18% nas laterais, 28% acima,
+   10% abaixo), normaliza para ≥ 448 px no menor lado e codifica em **Base64 JPEG**.
+2. Faz `POST` assíncrono para
+   `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent`
+   enviando a imagem + um prompt em PT-BR.
+3. Usa **Structured Output**: `responseMimeType=application/json` + um `responseSchema`
+   (`helmet`, `vest`, `glasses`, `cap` booleanos + `description` string, todos `required`).
+   A API é **forçada** a devolver JSON estrito — **sem regex, sem parsing frágil**.
 
-**Performance**
+**Pontos fortes**
+- **Confiabilidade de formato 100%** (JSON Schema, não texto livre).
+- **Sem hardware pesado** — o trabalho do VLM roda na nuvem; qualquer notebook serve.
+- **Inicialização instantânea** — nada para baixar/subir localmente além do YOLO.
+- **Resiliência** — erros transitórios (`429/500/503` "model overloaded") são repetidos com
+  backoff exponencial (até 4 tentativas), então um pico de demanda não derruba a análise.
 
-- ~1 segundo por imagem (independente do número de pessoas)
-- 100% acerto em fotos de teste com EPIs hi-vis padrão
-- Não precisa de Ollama rodando
+**Requisitos** — internet + `GEMINI_API_KEY` válida.
 
-**Limitações**
+### 3.2 Modo local / offline (fallback)
 
-- Coletes não-padrão (rosa, vermelho puro) podem não ser detectados — adicionar range HSV se necessário
-- Capacetes muito apagados em fundo neutro podem ter conf baixa do YOLO-World
+`DETECTION_MODE=yolo` · `python run.py --local`
 
-### 3.2 Modo Ollama (alternativo)
+**Como funciona** — sem nenhuma chamada externa:
+- **Capacete**: associa bboxes de capacete do YOLO-World ao topo do bbox da pessoa.
+- **Colete**: análise de cor **HSV** no torso (laranja `H 5–22`, amarelo `H 22–45`,
+  lime `H 45–75`, alta saturação). Fração > 15% ⇒ colete presente.
+- Avalia apenas `helmet` + `vest` (não há `glasses`/`cap` — esses exigem o VLM).
 
-**Como funciona**
+**Quando usar** — sem internet ou sem chave de API; demonstração offline; máquina isolada.
 
-1. YOLO-World detecta pessoas (sem usar a classe helmet).
-2. Para cada pessoa, recorta o bbox com folga (cabeça + torso) e envia ao modelo `gemma3:4b` via `/api/chat` do Ollama com um prompt descritivo:
-   > "Describe this construction worker in 2-3 short sentences, focused on what they wear on their head and on their torso. Be specific about colors. If they have no hat or no vest, say so explicitly."
-3. A descrição em texto é parseada por regex de keywords:
-   - `helmet`: detecta `hard hat`, `helmet`, etc., negado por `no [...] hat/helmet`, `bare head`, etc.
-   - `vest`: detecta `safety vest`, `hi-vis vest`, `[color] vest`, negado por `no [...] vest`, etc.
+### 3.3 Comparação
 
-**Performance**
-
-- ~10 segundos **por trabalhador** (~80s para 8 pessoas)
-- ~75-80% de acurácia em fotos de teste
-- Requer Ollama rodando + `gemma3:4b` baixado (~3.3 GB)
-
-**Limitações**
-
-- LLMs pequenos têm viés de "trabalhador de obra = tem EPI" e ocasionalmente alucinam capacete/colete inexistente
-- Pelo contrário, capacetes brancos em fundo branco/céu às vezes não são vistos
-
-### 3.3 Quando usar cada um
-
-| Critério                   | YOLO              | Ollama            |
-| -------------------------- | ----------------- | ----------------- |
-| Velocidade                 | ✅ ~1s            | ⚠️ ~80s           |
-| Acurácia (fotos testadas)  | ✅ ~100%          | ~75-80%           |
-| Dependência externa        | nenhuma           | Ollama rodando    |
-| Uso de GPU                 | 1-2 GB VRAM       | 4.3 GB VRAM       |
-| Descrição textual          | ❌                | ✅ (futura feature) |
-
-**Use Ollama** apenas se for evoluir o produto para gerar relatórios em linguagem natural ou explicar visualmente os achados. Caso contrário, mantenha o **YOLO**.
+| Critério | Gemini (padrão) | Local/offline |
+| -------- | --------------- | ------------- |
+| EPIs avaliados | capacete, colete, **óculos, boné** | capacete, colete |
+| Garantia de formato | ✅ JSON Schema | ✅ (booleans diretos) |
+| Dependência externa | internet + chave | nenhuma |
+| Custo | tokens da API Gemini | zero |
+| Robustez a falhas | retry/backoff embutido | n/a |
 
 ---
 
-## 4. Como rodar
+## 4. Regra de conformidade
 
-### 4.1 Pré-requisitos
+Idêntica no backend (`pipeline._build_response`) e no frontend
+(`computeStatus` em `ResultsScreen.jsx` e `BoundingBoxes.jsx`):
 
-- **Python 3.12+** com `pip`
+```
+CONFORME  ⇔  helmet  E  vest  E  glasses  E  (NÃO cap)
+```
+
+Quando o backend **não avaliou** `glasses`/`cap` (modo offline), esses campos são **omitidos**
+do JSON e tratados como "não impeditivos" (`glasses` ⇒ ok, `cap` ⇒ sem alerta), de modo que o
+modo offline não marca todos como não-conformes por falta de óculos.
+
+---
+
+## 5. Como rodar
+
+### 5.1 Pré-requisitos
+- **Python 3.12** com `pip`
 - **Node.js 20+** com `npm` (para buildar o frontend)
-- **GPU NVIDIA com ≥ 4 GB VRAM** recomendado (CPU funciona mas é lento)
-- **(Apenas modo Ollama)** [Ollama](https://ollama.com/) instalado e disponível no PATH
+- **(modo Gemini)** chave de API do **Google AI Studio**
 
-### 4.2 Instalação inicial
-
+### 5.2 Instalação
 ```powershell
-# Backend
-cd backend
-pip install -r requirements.txt
-cd ..
+cd backend; pip install -r requirements.txt; cd ..
+cd frontend; npm install; cd ..
+```
+O `yolov8l-world.pt` baixa automaticamente no primeiro run.
 
-# Frontend
-cd frontend
-npm install
-cd ..
+### 5.3 Configurar a chave (modo Gemini)
+Crie `backend/.env`:
+```ini
+DETECTION_MODE=gemini
+GEMINI_API_KEY=SUA_CHAVE_DO_GOOGLE_AI_STUDIO
 ```
 
-O modelo YOLO-World (`yolov8l-world.pt`, 91 MB) baixa automaticamente no primeiro run.
-
-### 4.3 Rodar (modo YOLO — default)
-
+### 5.4 Rodar
 ```powershell
-python run.py
+python run.py            # padrão: YOLOv8 + Google Gemini (builda frontend e sobe servidor)
+python run.py --local    # offline: YOLOv8 + visão computacional local
+python run.py --dev      # pula o rebuild do frontend (usa o build anterior)
 ```
+Abra **http://localhost:8000** e envie uma foto.
 
-O launcher:
-1. Mostra "Detection mode: YOLO-World (default)"
-2. Pula checagens de Ollama (não é necessário)
-3. Builda o frontend com `npm run build`
-4. Copia o build para `backend/static/`
-5. Sobe o servidor com uvicorn em `http://localhost:8000`
-
-Abra o navegador em **http://localhost:8000** e suba uma foto.
-
-### 4.4 Rodar (modo Ollama)
-
-```powershell
-python run.py --ollama
-```
-
-O launcher:
-1. Mostra "Detection mode: OLLAMA (gemma3:4b)"
-2. Inicia o Ollama em background se não estiver rodando
-3. Baixa `gemma3:4b` se ainda não existir (~3.3 GB, demora alguns minutos na primeira vez)
-4. Builda o frontend e sobe o servidor
-
-Alternativamente, defina a variável de ambiente:
-
-```powershell
-$env:DETECTION_MODE = "ollama"
-python run.py
-```
-
-### 4.5 Flags úteis
-
-```powershell
-python run.py --dev          # pula o build do frontend (usa o build anterior)
-python run.py --ollama --dev # ambos
-```
-
-### 4.6 Verificar o modo ativo
-
+### 5.5 Conferir o modo ativo
 ```powershell
 curl http://localhost:8000/api/status
 ```
-
-Retorna algo como:
 ```json
 {
   "status": "ok",
-  "detection_mode": "yolo",
+  "detection_mode": "gemini",
   "yolo": "loaded",
   "yolo_model": "yolov8l-world.pt",
-  "ollama": "unused",
-  "ollama_model": null
+  "gemini": "configured"
 }
 ```
 
-No modo Ollama, `ollama` será `connected` e `ollama_model` mostra o modelo.
+---
+
+## 6. Configuração
+
+Defaults em [backend/app/config.py](backend/app/config.py); sobrescreva via `.env` ou env vars.
+
+| Variável | Default | O que é |
+| -------- | ------- | ------- |
+| `DETECTION_MODE` | `gemini` | `gemini` (nuvem) ou `yolo` (offline) |
+| `GEMINI_API_KEY` | `""` | chave do Google AI Studio (obrigatória no modo gemini) |
+| `YOLO_MODEL` | `yolov8l-world.pt` | modelo YOLO (caminho relativo a `backend/`) |
+| `CONFIDENCE_THRESHOLD` | `0.35` | confiança mínima de detecção |
+| `MAX_UPLOAD_SIZE_MB` | `10` | tamanho máximo de upload |
+| `UPLOAD_DIR` | `uploads` | pasta das imagens enviadas |
+| `STATIC_DIR` | `static` | pasta do build do frontend |
+
+> **Segurança:** `.env` está no `.gitignore` e **não** é versionado. Trate a `GEMINI_API_KEY`
+> como segredo; se ela vazar (chat, log, screenshot), **rotacione-a** no Google AI Studio.
 
 ---
 
-## 5. Configuração
-
-Tudo configurável via variáveis de ambiente ou arquivo `.env` em `backend/`. Defaults em [backend/app/config.py](backend/app/config.py).
-
-| Variável                | Default              | O que é |
-| ----------------------- | -------------------- | ------- |
-| `DETECTION_MODE`        | `yolo`               | `yolo` ou `ollama` |
-| `OLLAMA_URL`            | `http://localhost:11434` | Endpoint do Ollama |
-| `OLLAMA_MODEL`          | `gemma3:4b`          | Modelo VLM usado no modo Ollama |
-| `YOLO_MODEL`            | `yolov8l-world.pt`   | Modelo YOLO (caminho relativo a `backend/`) |
-| `CONFIDENCE_THRESHOLD`  | `0.35`               | Confiança mínima de detecção |
-| `MAX_UPLOAD_SIZE_MB`    | `10`                 | Tamanho máximo de upload |
-| `UPLOAD_DIR`            | `uploads`            | Pasta de imagens enviadas |
-| `STATIC_DIR`            | `static`             | Pasta do build do frontend |
-
-Exemplo de `backend/.env`:
-
-```ini
-DETECTION_MODE=ollama
-OLLAMA_MODEL=gemma3:4b
-CONFIDENCE_THRESHOLD=0.40
-```
-
----
-
-## 6. Endpoints
+## 7. Endpoints
 
 ### `GET /api/status`
-
-Healthcheck. Retorna modo ativo, status do YOLO e (no modo Ollama) status do Ollama.
+Healthcheck: modo ativo, se o YOLO está carregado e se a chave Gemini está configurada.
 
 ### `POST /api/analyze`
-
-Recebe uma imagem (multipart/form-data, campo `file`, JPG/PNG/WebP até 10 MB) e devolve um JSON:
+Recebe imagem (`multipart/form-data`, campo `file`, JPG/PNG/WebP até 10 MB) e devolve:
 
 ```json
 {
   "detections": [
     {
       "id": 1,
-      "x": 19.4,         // % esquerda
-      "y": 23.2,         // % topo
-      "w": 12.2,         // % largura
-      "h": 70.5,         // % altura
-      "confidence": 0.96,
+      "x": 33.23, "y": 37.66, "w": 15.21, "h": 30.78,   // % da imagem
+      "confidence": 0.958,
       "helmet": true,
       "vest": true,
+      "glasses": false,   // presente só no modo Gemini
+      "cap": true,        // presente só no modo Gemini
       "role": "Trabalhador 01"
     }
   ],
-  "image_width": 2816,
-  "image_height": 1536,
-  "image_url": "/uploads/abc...png",
-  "stats": {
-    "total": 8,
-    "ok": 3,
-    "bad": 5,
-    "pct": 38,
-    "avg_confidence": 72
-  },
-  "duration_seconds": 1.32
+  "image_width": 960,
+  "image_height": 640,
+  "stats": { "total": 1, "ok": 0, "bad": 1, "pct": 0, "avg_confidence": 96 },
+  "duration_seconds": 4.16,
+  "image_url": "/uploads/7986c60e....jpg"
 }
 ```
-
-Coordenadas vêm em **porcentagem da imagem** para que o frontend possa desenhar overlays independente do tamanho de exibição.
+Coordenadas em **porcentagem** para overlays independentes do tamanho de exibição.
 
 ### `GET /uploads/{filename}`
-
-Serve a imagem original enviada. URL retornada em `image_url`.
+Serve a imagem original enviada (URL retornada em `image_url`).
 
 ### `GET /`
-
-Serve o frontend buildado (React SPA).
+Serve a SPA React buildada (`backend/static/`).
 
 ---
 
-## 7. Fluxo do usuário
+## 8. Fluxo do usuário
 
 1. Acessa `http://localhost:8000`.
-2. **UploadScreen** — arrasta ou seleciona uma foto de obra. Botão "Analisar imagem" habilita.
-3. **LoadingScreen** — animação enquanto roda o pipeline. Faz `POST /api/analyze`.
-4. **ResultsScreen** — exibe a imagem com bounding boxes coloridas:
-   - **Verde**: trabalhador em conformidade
-   - **Vermelho**: trabalhador sem EPI completo
-   Painel lateral lista cada trabalhador (`Trabalhador 01`, `02`, ...) com o que falta. Botão "Analisar nova imagem" reseta o fluxo.
+2. **UploadScreen** — arrasta/seleciona a foto; "Analisar imagem" habilita.
+3. **LoadingScreen** — anima o pipeline (YOLO local + Google Gemini) e faz `POST /api/analyze`.
+   A barra vai a 100% quando o resultado chega.
+4. **ResultsScreen** — imagem com bounding boxes (verde/vermelho/âmbar), tooltips com o status
+   (CONFORME / INCOMPLETO / ALERTA (BONÉ)) e painel lateral com os 4 chips de EPI por pessoa
+   e as estatísticas da cena. "Analisar nova imagem" reinicia o fluxo.
 
 ---
 
-## 8. Modelos de IA
+## 9. Modelos de IA
 
 ### YOLO-World (`yolov8l-world.pt`)
+YOLOv8 **open-vocabulary**: recebe classes em linguagem natural (`["helmet", "person"]`) em vez
+das 80 classes fixas do COCO. Roda local, ~0.5–1 s por imagem. Faz a detecção geométrica
+(bounding boxes) de pessoas e capacetes. Baixa do repositório da Ultralytics no 1º uso.
 
-Modelo open-vocabulary baseado em YOLOv8 — recebe **prompts em linguagem natural** como classes ao invés das 80 classes fixas do COCO. Usado com `["helmet", "person"]` como classes ativas. 91 MB, roda em GPU em ~0.5-1s por imagem. Baixa automaticamente do GitHub da Ultralytics no primeiro uso.
-
-### Gemma 3 (`gemma3:4b`) — apenas no modo Ollama
-
-Modelo de visão da Google. 3.3 GB em disco, ocupa ~4.3 GB VRAM, cabe 100% em GPUs de 6 GB+. Acessado via Ollama na porta 11434. Recebe um crop de cada trabalhador e devolve descrição em texto livre que é parseada por regex.
-
----
-
-## 9. Decisões de design e histórico
-
-Este projeto passou por iterações relevantes. As decisões abaixo são propositais.
-
-- **Por que YOLO-World e não YOLOv8 padrão?** O YOLO padrão só detecta as 80 classes do COCO ("person" sim, mas nada de "helmet" ou "vest"). YOLO-World permite prompts customizados, dispensando treinamento de dataset.
-
-- **Por que análise HSV para colete e não LLM?** Coletes hi-vis são *projetados* para serem cromaticamente distintos (alta saturação em hues específicos). HSV acerta com alta precisão em milissegundos. LLMs pequenos confundem coletes com camisas coloridas.
-
-- **Por que não usar LLM para capacete também?** Os capacetes têm formas e texturas variadas. YOLO-World tem feature de detecção de objetos forte para isso, enquanto LLMs pequenos alucinam capacetes em qualquer foto de obra.
-
-- **Por que Ollama mode existe se YOLO é melhor?** Existe como segunda opção para futuros casos onde se queira **descrição em linguagem natural** do que cada trabalhador veste — útil para gerar relatórios automáticos ou validação humana.
-
-- **Por que `gemma3:4b` e não `llava:13b`/`llama3.2-vision:11b`?** Modelos > 6 GB em uma GPU de 6 GB VRAM caem para offload CPU/GPU e o vision encoder quebra (saída vira lixo de tokens). Gemma 3 (4B) cabe 100% na GPU e funciona.
+### Google Gemini 2.5 Flash (`gemini-2.5-flash`)
+VLM multimodal da Google acessado pela **Generative Language API** (REST). Recebe o crop de
+cada trabalhador + prompt e, via **Structured Output (JSON Schema)**, devolve os 4 booleanos de
+EPI + uma descrição. Rápido, sem GPU local, e com **formato garantido** (sem regex).
 
 ---
 
-## 10. Limitações conhecidas
+## 10. Decisões de design (Ollama → Gemini)
 
-- **Coletes não-tradicionais** (rosa, vermelho puro, sem listras refletivas): não detectados no modo YOLO. Adicione um range HSV em `llava_service._VEST_*` se aparecer no dataset real.
-- **Cenas muito escuras ou contraluz**: tanto YOLO-World quanto Gemma perdem precisão.
-- **Pessoas muito pequenas no fundo**: detectadas pelo YOLO mas EPI pouco confiável (baixa resolução do crop).
-- **Modo Ollama** alucina ~20% dos casos em LLMs pequenos. Para produção confiável, treinar um YOLO específico para EPI no dataset alvo.
+- **Por que migrar de Ollama/LLaVA para Gemini?** O modo local exigia rodar o serviço Ollama e
+  manter um VLM (~4–5 GB VRAM) carregado, parseava texto livre por **regex** (frágil), e a
+  inicialização travava checando/baixando o modelo. Gemini elimina o hardware pesado, a
+  inicialização lenta e o parsing frágil.
+- **Por que Structured Output em vez de regex?** Pedir `responseSchema` força a API a retornar
+  JSON estrito e tipado — qualquer variação de redação do modelo deixa de quebrar a leitura.
+- **Por que manter YOLO-World local para detecção?** Geometria (onde está cada pessoa) é rápida,
+  barata e determinística localmente; mandar a imagem inteira ao VLM só para localizar pessoas
+  seria mais lento e caro. O híbrido usa cada ferramenta no que ela é melhor.
+- **Por que recortar a pessoa antes de enviar?** Foca o VLM no trabalhador (melhor sinal/ruído),
+  reduz tokens de imagem e melhora a precisão da classificação por pessoa.
+- **Por que retry com backoff?** O Gemini Flash retorna `503` intermitente sob carga; repetir
+  com espera evita que um pico derrube a análise inteira por causa de um único recorte.
+- **Por que manter um modo offline (`local_cv_service`)?** Garante demonstração e operação sem
+  internet/chave (capacete via YOLO + colete via HSV), mantendo a mesma assinatura de função.
 
 ---
 
-## 11. Evoluções futuras sugeridas
+## 11. Limitações conhecidas
 
-1. **Modelo YOLO treinado em PPE** — coletar/anotar 500-1000 imagens de obra e treinar `yolov8n.pt` com classes `["helmet", "vest", "person"]`. Substitui ambos os modos atuais e elimina os pontos fracos.
-2. **Suporte a vídeo** (atualmente só imagens estáticas).
-3. **Mais EPIs**: luvas, óculos, máscara, botina.
-4. **Relatório PDF** com print da cena anotada + estatísticas + descrição em linguagem natural (aqui o modo Ollama vira útil).
-5. **Multi-imagem em batch** com filtro de "não conformes apenas".
-6. **Webcam ao vivo** com detecção em tempo real (depende do item 1).
+- **Óculos/boné** dependem do julgamento do VLM; viseiras e bonés sob capacete podem gerar
+  classificações discutíveis.
+- **Modo offline** não avalia óculos nem boné (só capacete + colete).
+- **Coletes não-padrão** (rosa, vermelho puro) podem escapar do HSV no modo offline — adicione
+  um range em `local_cv_service._VEST_*`.
+- **Cenas escuras / contraluz / pessoas pequenas no fundo** reduzem a precisão de detecção e de
+  classificação.
+- **Custo/limite de cota** da API Gemini aplica-se ao modo padrão.
 
 ---
 
 ## 12. Solução de problemas
 
-| Sintoma                                              | Causa provável                                    | Solução |
-| ---------------------------------------------------- | ------------------------------------------------- | ------- |
-| `ConnectError: Ollama não está rodando`              | Modo Ollama mas serviço offline                   | `ollama serve` ou rode com `python run.py` (sem `--ollama`) |
-| Status mostra `yolo: not_loaded`                     | YOLO não baixou ou erro de import                 | Verifique `backend/yolov8l-world.pt`. Apague e rode de novo para re-baixar. |
-| Modelo Ollama carrega em `100% CPU` em vez de GPU    | Modelo maior que sua VRAM                         | Use `gemma3:4b` (cabe em 6 GB), evite `llava:13b` ou `llama3.2-vision:11b` em GPUs pequenas. |
-| Frontend quebrado / tela branca                       | Build desatualizado                               | `python run.py` (sem `--dev`) para forçar rebuild |
-| Erro `UnicodeEncodeError` no terminal Windows         | Encoding console                                  | `run.py` já força UTF-8; se persistir, `set PYTHONIOENCODING=utf-8` |
-| Porta 8000 em uso                                     | Outra instância rodando                           | `Stop-Process -Id <pid>` ou abra a já existente |
-| Acurácia ruim em fotos específicas                    | Limitações do modelo / coletes não-padrão         | Modo YOLO + adicione ranges HSV; ou treine modelo PPE-específico |
+| Sintoma | Causa provável | Solução |
+| ------- | -------------- | ------- |
+| **Tela branca ao chegar em 100%** | bundle antigo em cache do navegador | rode `python run.py` (sem `--dev`) para rebuildar e copiar o frontend; force refresh (Ctrl+F5) |
+| `/api/analyze` retorna 500 "Erro de processamento no Gemini" | chave inválida/ausente ou `503` persistente | confira `GEMINI_API_KEY` no `.env`; o retry cobre picos curtos — tente de novo |
+| `gemini: "not_configured"` no `/api/status` | `.env` sem `GEMINI_API_KEY` | preencha a chave e reinicie o servidor |
+| Status `yolo: not_loaded` | modelo não baixou / erro de import | verifique `backend/yolov8l-world.pt`; apague e rode de novo para re-baixar |
+| Porta 8000 em uso | outra instância rodando | `Stop-Process -Id <pid>` ou abra a instância existente |
+| `UnicodeEncodeError` no terminal Windows | encoding do console | `run.py` já força UTF-8; se persistir, `set PYTHONIOENCODING=utf-8` |
+| Sem internet / sem chave | modo Gemini indisponível | use `python run.py --local` (offline) |
 
 ---
 
-## 13. Licença e atribuições
+## 13. Licenças e atribuições
 
-- **Ultralytics YOLOv8 / YOLO-World** — licença AGPL-3.0
-- **Ollama + Gemma 3** — licenças dos respectivos modelos (consultar Ollama)
-- **FastAPI, React, Vite, OpenCV, Pillow** — open-source nas suas respectivas licenças
+- **Ultralytics YOLOv8 / YOLO-World** — AGPL-3.0
+- **Google Gemini API** — Termos do Google AI Studio / Generative Language API
+- **FastAPI, React, Vite, OpenCV, Pillow, httpx** — open-source, licenças respectivas

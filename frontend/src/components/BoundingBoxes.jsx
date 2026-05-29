@@ -8,17 +8,24 @@ export default function BoundingBoxes({
   showTags,
 }) {
   const computeStatus = (p) => {
-    const ok = p.helmet && p.vest;
+    const helmetOk = p.helmet;
+    const vestOk = p.vest;
+    const glassesOk = p.glasses !== undefined ? p.glasses : true;
+    const capAlert = p.cap === true;
+
+    const ok = helmetOk && vestOk && glassesOk && !capAlert;
     const missing = [];
     if (!p.helmet) missing.push("capacete");
     if (!p.vest) missing.push("colete");
-    return { ok, missing };
+    if (p.glasses === false) missing.push("óculos");
+    if (p.cap === true) missing.push("boné");
+    return { ok, missing, capAlert };
   };
 
   return (
     <>
       {detections.map((p, idx) => {
-        const { ok } = computeStatus(p);
+        const { ok, capAlert } = computeStatus(p);
         const cls = [
           "bbox",
           `bbox--${markingStyle}`,
@@ -52,7 +59,7 @@ export default function BoundingBoxes({
             <span className="bbox-badge">{p.id}</span>
             {showTags && (
               <span className="bbox-tag">
-                <span>{ok ? "CONFORME" : "SEM EPI"}</span>
+                <span>{ok ? "CONFORME" : capAlert ? "ALERTA (BONÉ)" : "INCOMPLETO"}</span>
                 <span className="num">{Math.round(p.confidence * 100)}%</span>
               </span>
             )}

@@ -33,7 +33,7 @@ export default function TopBar({ theme, onToggleTheme, status }) {
       <div className="topbar-right">
         <div className="status-chip">
           <span className="pulse-dot" aria-hidden="true" />
-          <span>{status || "Local · YOLOv8 + LLaVA"}</span>
+          <span>{status || "YOLOv8 + Google Gemini"}</span>
         </div>
         <ThemeToggle theme={theme} onToggle={onToggleTheme} />
       </div>

@@ -114,7 +114,7 @@ export default function UploadScreen({ onAnalyze }) {
       <div className="feature-row">
         {[
           { num: "01", label: "Detecção de pessoas", desc: "YOLOv8 identifica todas as pessoas presentes e isola cada região da cena." },
-          { num: "02", label: "Análise por pessoa", desc: "LLaVA verifica individualmente a presença de capacete e colete refletivo." },
+          { num: "02", label: "Análise por pessoa", desc: "Google Gemini verifica individualmente capacete, colete, óculos e boné de cada trabalhador." },
           { num: "03", label: "Visualização imediata", desc: "Sobreposição colorida com painel resumo e descrição do que está faltando." },
         ].map((f) => (
           <div className="feature" key={f.num}>

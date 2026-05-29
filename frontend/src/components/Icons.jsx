@@ -42,4 +42,23 @@ export const Icon = {
       <polyline points="20 6 9 17 4 12"/>
     </svg>
   ),
+  Glasses: () => (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="6" cy="12" r="3"/>
+      <circle cx="18" cy="12" r="3"/>
+      <path d="M9 12h6"/>
+      <path d="M3 12h1"/>
+      <path d="M20 12h1"/>
+      <path d="M6 9c.5-2 2-3 4-3"/>
+      <path d="M18 9c-.5-2-2-3-4-3"/>
+    </svg>
+  ),
+  Cap: () => (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M2 18h14c3 0 6-2 6-6 0-3-3-4-6-4H6C3 8 2 11 2 14v4z"/>
+      <path d="M6 8a4 4 0 0 1 8 0"/>
+      <path d="M2 14c2-1 4-1 6 0"/>
+    </svg>
+  ),
 };
+

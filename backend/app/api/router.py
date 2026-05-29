@@ -20,35 +20,26 @@ MAX_SIZE_BYTES = settings.max_upload_size_mb * 1024 * 1024
 @router.get("/status")
 async def status() -> dict:
     """Health check — reports the active detection backend and its readiness."""
-    import httpx
     from app.services.yolo_service import yolo_service
 
     mode = settings.detection_mode
     yolo_ok = yolo_service.is_loaded()
-
-    ollama_ok = False
-    if mode == "ollama":
-        try:
-            async with httpx.AsyncClient(timeout=3) as client:
-                r = await client.get(f"{settings.ollama_url}/api/tags")
-                ollama_ok = r.status_code == 200
-        except Exception:
-            pass
+    gemini_configured = bool(settings.gemini_api_key)
 
     return {
         "status": "ok",
         "detection_mode": mode,
         "yolo": "loaded" if yolo_ok else "not_loaded",
         "yolo_model": settings.yolo_model,
-        "ollama": ("connected" if ollama_ok else "unreachable") if mode == "ollama" else "unused",
-        "ollama_model": settings.ollama_model if mode == "ollama" else None,
+        "gemini": "configured" if gemini_configured else "not_configured",
     }
+
 
 
 @router.post("/analyze")
 async def analyze(file: UploadFile = File(...)) -> JSONResponse:
     """
-    Accepts an image upload, runs the full YOLOv8 → LLaVA pipeline, and
+    Accepts an image upload, runs the full YOLOv8 → Google Gemini pipeline, and
     returns structured detection data with bounding-box coordinates (% units)
     and per-worker EPI compliance status.
     """

@@ -10,24 +10,41 @@ from app.services.yolo_service import yolo_service
 logger = logging.getLogger(__name__)
 
 
-def _get_analyzer():
-    """Pick the EPI classifier backend based on settings.detection_mode."""
-    if settings.detection_mode == "ollama":
-        from app.services.ollama_service import analyze_worker_epi
-        return analyze_worker_epi, "ollama"
-    from app.services.llava_service import analyze_worker_epi
-    return analyze_worker_epi, "yolo"
+async def _local_cv(image_path: Path, persons: list[dict], helmets: list[dict]) -> list[dict[str, Any]]:
+    """Offline fallback: helmet (YOLO) + vest (HSV), per worker."""
+    from app.services.local_cv_service import analyze_worker_epi as cv_analyze
+    return [await cv_analyze(image_path, p, helmets, p["id"]) for p in persons]
 
 
-analyze_worker_epi, _backend_name = _get_analyzer()
-logger.info("[pipeline] EPI classifier backend: %s", _backend_name)
+async def _classify(image_path: Path, persons: list[dict], helmets: list[dict]) -> list[dict[str, Any]]:
+    """
+    Classify every detected worker's EPI, returning a list aligned with `persons`.
+
+    Gemini mode classifies all workers in ONE request (rate-limit friendly) and
+    transparently falls back to local computer-vision if the API is unavailable
+    (e.g. 429/503 after retries) so the analysis never hard-fails.
+    """
+    if settings.detection_mode == "gemini":
+        from app.services.gemini_service import analyze_workers_epi
+        try:
+            return await analyze_workers_epi(image_path, persons, helmets)
+        except Exception as exc:
+            logger.warning(
+                "[pipeline] Gemini indisponível (%s) — usando fallback de visão computacional local.",
+                exc,
+            )
+            return await _local_cv(image_path, persons, helmets)
+    return await _local_cv(image_path, persons, helmets)
+
+
+logger.info("[pipeline] EPI classifier backend: %s", settings.detection_mode)
 
 
 async def run_pipeline(image_path: Path) -> dict[str, Any]:
     """
     Full EPI detection pipeline:
       1. YOLOv8  → bounding boxes for every person
-      2. LLaVA   → EPI status per cropped worker (sequential to respect Ollama limits)
+      2. Gemini  → EPI status for all cropped workers (single multimodal request)
       3. Consolidate → structured response with stats
 
     Returns a dict ready to be serialised as JSON by the API router.
@@ -48,24 +65,29 @@ async def run_pipeline(image_path: Path) -> dict[str, Any]:
         len(persons), len(helmets),
     )
 
-    # ── Step 2: EPI analysis per person ─────────────────────────────────────
+    # ── Step 2: EPI analysis (one batched call in Gemini mode) ───────────────
+    epi_results = await _classify(image_path, persons, helmets)
+
     detections: list[dict[str, Any]] = []
-    for det in persons:
-        logger.info("[pipeline] Step 2 — analysing worker #%02d", det["id"])
-        epi = await analyze_worker_epi(image_path, det, helmets, det["id"])
-        detections.append(
-            {
-                "id": det["id"],
-                "x": det["x"],
-                "y": det["y"],
-                "w": det["w"],
-                "h": det["h"],
-                "confidence": det["confidence"],
-                "helmet": epi["helmet"],
-                "vest": epi["vest"],
-                "role": f"Trabalhador {det['id']:02d}",
-            }
-        )
+    for det, epi in zip(persons, epi_results):
+        entry = {
+            "id": det["id"],
+            "x": det["x"],
+            "y": det["y"],
+            "w": det["w"],
+            "h": det["h"],
+            "confidence": det["confidence"],
+            "helmet": epi.get("helmet", False),
+            "vest": epi.get("vest", False),
+            "role": f"Trabalhador {det['id']:02d}",
+        }
+        # glasses/cap only exist in the Gemini backend; omit them in local-CV
+        # mode so the frontend treats them as "not evaluated" (compliant).
+        if "glasses" in epi:
+            entry["glasses"] = epi["glasses"]
+        if "cap" in epi:
+            entry["cap"] = epi["cap"]
+        detections.append(entry)
 
     # ── Step 3: consolidate stats ────────────────────────────────────────────
     logger.info("[pipeline] Step 3 — consolidating results")
@@ -78,7 +100,17 @@ def _build_response(
     image_size: tuple[int, int],
 ) -> dict[str, Any]:
     total = len(detections)
-    ok_count = sum(1 for d in detections if d.get("helmet") and d.get("vest"))
+    # Compliance = helmet + vest + glasses + NO cap. glasses/cap default to
+    # "compliant" when the backend didn't evaluate them (local-CV mode), so
+    # this rule matches the frontend's computeStatus exactly.
+    ok_count = sum(
+        1
+        for d in detections
+        if d.get("helmet")
+        and d.get("vest")
+        and d.get("glasses", True)
+        and not d.get("cap", False)
+    )
     bad_count = total - ok_count
     pct = round(ok_count / total * 100) if total else 0
     avg_conf = (

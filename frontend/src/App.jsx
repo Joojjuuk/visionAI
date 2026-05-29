@@ -44,9 +44,9 @@ export default function App() {
   }, []);
 
   const status = useMemo(() => {
-    if (stage === "loading") return "Processando · local";
-    if (stage === "results") return "Análise concluída · local";
-    return "Local · YOLOv8 + LLaVA";
+    if (stage === "loading") return "Processando · YOLOv8 + Gemini";
+    if (stage === "results") return "Análise concluída";
+    return "YOLOv8 + Google Gemini";
   }, [stage]);
 
   return (

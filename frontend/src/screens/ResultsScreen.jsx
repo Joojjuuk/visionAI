@@ -3,12 +3,21 @@ import { Icon } from "../components/Icons.jsx";
 import BoundingBoxes from "../components/BoundingBoxes.jsx";
 
 function computeStatus(p) {
-  const ok = p.helmet && p.vest;
+  const helmetOk = p.helmet;
+  const vestOk = p.vest;
+  const glassesOk = p.glasses !== undefined ? p.glasses : true;
+  const capAlert = p.cap === true;
+
+  const ok = helmetOk && vestOk && glassesOk && !capAlert;
   const missing = [];
   if (!p.helmet) missing.push("capacete");
   if (!p.vest) missing.push("colete");
-  return { ok, missing };
+  if (p.glasses === false) missing.push("óculos");
+  if (p.cap === true) missing.push("boné (perigo)");
+
+  return { ok, missing, helmetOk, vestOk, glassesOk, capAlert };
 }
+
 
 export default function ResultsScreen({ file, result, onReset, markingStyle, showTags }) {
   const detections = result?.detections ?? [];
@@ -163,7 +172,7 @@ export default function ResultsScreen({ file, result, onReset, markingStyle, sho
 
           <ul className="person-list">
             {filtered.map((p) => {
-              const { ok, missing } = computeStatus(p);
+              const { ok, missing, helmetOk, vestOk, glassesOk, capAlert } = computeStatus(p);
               const isActive = activeId === p.id;
               return (
                 <li key={p.id}>
@@ -182,11 +191,17 @@ export default function ResultsScreen({ file, result, onReset, markingStyle, sho
                         </span>
                       </span>
                       <span className="person-desc">
-                        <span className={`epi-chip ${p.helmet ? "ok" : "bad"}`}>capacete</span>
-                        <span className={`epi-chip ${p.vest ? "ok" : "bad"}`}>colete</span>
+                        <span className={`epi-chip ${helmetOk ? "ok" : "bad"}`}>capacete</span>
+                        <span className={`epi-chip ${vestOk ? "ok" : "bad"}`}>colete</span>
+                        {p.glasses !== undefined && (
+                          <span className={`epi-chip ${glassesOk ? "ok" : "bad"}`}>óculos</span>
+                        )}
+                        {p.cap !== undefined && (
+                          <span className={`epi-chip ${capAlert ? "alert" : "ok"}`}>{capAlert ? "boné" : "sem boné"}</span>
+                        )}
                         {!ok && (
                           <span style={{ color: "var(--danger)", fontSize: 11.5 }}>
-                            sem {missing.join(" e ")}
+                            requer: {missing.join(", ")}
                           </span>
                         )}
                       </span>

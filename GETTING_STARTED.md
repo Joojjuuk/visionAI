@@ -1,6 +1,6 @@
 # Guia de Início — VisionAI
 
-> Instale, configure e rode o VisionAI localmente em 5 passos.
+> Instale, configure e rode o VisionAI localmente em poucos passos.
 
 ---
 
@@ -8,11 +8,11 @@
 
 | Requisito | Versão Mínima | Link |
 |-----------|---------------|------|
-| Python | 3.10+ | [python.org](https://python.org) |
-| Node.js | 18+ | [nodejs.org](https://nodejs.org) |
-| Ollama | Última | [ollama.ai](https://ollama.ai) |
+| Python | 3.12 | [python.org](https://python.org) |
+| Node.js | 20+ | [nodejs.org](https://nodejs.org) |
+| Chave de API Gemini | — | [Google AI Studio](https://aistudio.google.com/app/apikey) |
 
-**Hardware:** 16 GB RAM recomendados (mínimo 8 GB). GPU acelera significativamente.
+**Hardware:** qualquer máquina recente serve — o trabalho pesado de classificação roda na nuvem (Gemini). GPU acelera a detecção YOLO, mas não é obrigatória.
 
 ---
 
@@ -25,17 +25,17 @@ cd visionAI
 
 ---
 
-## Passo 2 — Configurar o Ollama (LLaVA)
+## Passo 2 — Configurar a chave do Google Gemini
 
-```bash
-# Baixar o modelo LLaVA (~4.7 GB) — necessário apenas uma vez
-ollama pull llava:7b
+Crie o arquivo `backend/.env` com a sua chave do [Google AI Studio](https://aistudio.google.com/app/apikey):
 
-# Iniciar o servidor Ollama (manter rodando em background)
-ollama serve
+```ini
+DETECTION_MODE=gemini
+GEMINI_API_KEY=SUA_CHAVE_AQUI
 ```
 
-> O Ollama estará disponível em `http://localhost:11434`.
+> O `.env` está no `.gitignore` e **não** é versionado. Trate a chave como segredo.
+> Sem internet/chave, use o **modo offline** (`python run.py --local`), que dispensa o Gemini.
 
 ---
 
@@ -44,10 +44,8 @@ ollama serve
 ```bash
 cd backend
 
-# (Recomendado) Criar ambiente virtual
+# (Recomendado) Criar e ativar ambiente virtual
 python -m venv .venv
-
-# Ativar ambiente virtual
 # Windows:
 .venv\Scripts\activate
 # macOS / Linux:
@@ -57,7 +55,7 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-> O YOLOv8 baixará o modelo `yolov8n.pt` (~6.7 MB) automaticamente na primeira execução.
+> O YOLO-World (`yolov8l-world.pt`, ~91 MB) baixa automaticamente na primeira execução.
 
 ---
 
@@ -72,6 +70,17 @@ npm install
 
 ## Passo 5 — Rodar a Aplicação
 
+### Modo Produção (servidor único — recomendado)
+
+```bash
+# Na raiz do projeto
+python run.py            # YOLOv8 + Google Gemini (padrão)
+python run.py --local    # offline: YOLOv8 + visão computacional local
+python run.py --dev      # pula o rebuild do frontend
+```
+
+Acesse: **http://localhost:8000**
+
 ### Modo Desenvolvimento (2 terminais)
 
 ```bash
@@ -84,24 +93,16 @@ cd frontend && npm run dev
 
 Acesse: **http://localhost:5173**
 
-### Modo Produção (servidor único)
-
-```bash
-# Na raiz do projeto
-python run.py
-```
-
-Acesse: **http://localhost:8000**
-
 ---
 
-## Configuração (`backend/app/config.py`)
+## Configuração (`backend/.env` / [config.py](backend/app/config.py))
 
-```python
-OLLAMA_URL = "http://localhost:11434"
-LLAVA_MODEL = "llava:7b"       # Trocar por llava:13b para mais precisão
-YOLO_MODEL = "yolov8n.pt"
-CONFIDENCE_THRESHOLD = 0.50
+```ini
+DETECTION_MODE=gemini          # "gemini" (nuvem) ou "yolo" (offline)
+GEMINI_API_KEY=...             # chave do Google AI Studio
+YOLO_MODEL=yolov8l-world.pt
+CONFIDENCE_THRESHOLD=0.35
+MAX_UPLOAD_SIZE_MB=10
 ```
 
 ---
@@ -114,7 +115,7 @@ curl http://localhost:8000/api/status
 
 Resposta esperada:
 ```json
-{ "status": "ok", "yolo": "loaded", "ollama": "connected", "model": "llava:7b" }
+{ "status": "ok", "detection_mode": "gemini", "yolo": "loaded", "yolo_model": "yolov8l-world.pt", "gemini": "configured" }
 ```
 
 Swagger UI disponível em: **http://localhost:8000/docs**
@@ -125,22 +126,24 @@ Swagger UI disponível em: **http://localhost:8000/docs**
 
 | Erro | Causa | Solução |
 |------|-------|---------|
-| `ConnectionRefusedError` | Ollama não está rodando | Execute `ollama serve` |
-| Modelo não encontrado | LLaVA não baixado | Execute `ollama pull llava:7b` |
-| ImportError ultralytics | Dependência faltando | `pip install --upgrade ultralytics` |
-| Frontend não conecta | Backend offline | Verifique porta 8000 ativa |
-| Processamento lento | Sem GPU | Normal em CPU; evite imagens com muitas pessoas |
+| Tela branca ao chegar em 100% | bundle antigo em cache | rode `python run.py` (sem `--dev`) e force refresh (Ctrl+F5) |
+| 500 "Erro de processamento no Gemini" | chave inválida/ausente ou pico de carga | confira `GEMINI_API_KEY`; o retry cobre picos curtos, tente de novo |
+| `gemini: "not_configured"` | `.env` sem `GEMINI_API_KEY` | preencha a chave e reinicie |
+| Status `yolo: not_loaded` | modelo não baixou / import | verifique `backend/yolov8l-world.pt`; apague e rode de novo |
+| Sem internet / sem chave | modo Gemini indisponível | use `python run.py --local` |
+| ImportError ultralytics | dependência faltando | `pip install --upgrade ultralytics` |
+| Porta 8000 em uso | outra instância rodando | `Stop-Process -Id <pid>` ou use a instância existente |
 
 ---
 
 ## Documentação Adicional
 
 - [README.md](README.md) — Visão geral do projeto e como funciona
-- [PLAN-visionai-mvp.md](PLAN-visionai-mvp.md) — Roadmap técnico
+- [DOCUMENTACAO.md](DOCUMENTACAO.md) — Documentação técnica / especificação completa
 - [dex-architecture/architecture.md](dex-architecture/architecture.md) — Arquitetura do sistema
 
 ---
 
 <div align="center">
-  <sub>VisionAI — Processamento 100% Local · FATEC</sub>
+  <sub>VisionAI — YOLOv8 + Google Gemini · FATEC</sub>
 </div>

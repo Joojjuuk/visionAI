@@ -48,10 +48,10 @@ export default function LoadingScreen({ file, onDone }) {
         setLog((prev) => [...prev, { type, text, t: (delay / 1000).toFixed(1) + "s" }]);
       }, delay);
 
-    addLog("brand", "→ carregando modelos locais…", 0);
-    addLog("ok",    "  yolov8n.pt  pronto",          300);
-    addLog("ok",    "  llama3.2-vision ollama-served", 600);
-    addLog("brand", "▶ executando yolov8.detect()",  900);
+    addLog("brand", "→ inicializando YOLO local + Google Gemini VLM…", 0);
+    addLog("ok",    "  yolov8l-world.pt  pronto",    300);
+    addLog("ok",    "  gemini-2.5-flash conectado",   600);
+    addLog("brand", "▶ executando yolov8_world.detect()", 900);
 
     // ── Real API call ──────────────────────────────────────────────────────
     const formData = new FormData();
@@ -123,7 +123,7 @@ export default function LoadingScreen({ file, onDone }) {
             processando · {file?.name || "imagem.jpg"}
           </div>
           <h2>Analisando uso de EPI</h2>
-          <p className="subtle">Modelos rodando localmente — sua imagem não sai deste computador.</p>
+          <p className="subtle">Modelo YOLO local + Nuvem de Altíssimo Desempenho (Google Gemini API).</p>
 
           <ol className="steps">
             {STEPS.map((s, i) => {

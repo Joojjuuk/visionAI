@@ -1,7 +1,9 @@
 """
-PPE classification per person.
+Offline PPE classification per person — pure local computer-vision.
 
-Hybrid strategy after extensive empirical testing:
+This is the offline fallback backend (DETECTION_MODE=yolo / `python run.py --local`),
+used when Google Gemini is not available (no internet or no API key). It runs
+entirely on the machine with no external calls:
   - Helmet: YOLO-World detections from yolo_service. Hi-confidence,
     generalises across colours and image styles.
   - Vest:   HSV colour analysis on the torso region. Hi-vis safety vests
@@ -9,8 +11,9 @@ Hybrid strategy after extensive empirical testing:
     is faster and more reliable than open-vocabulary detection (which we
     confirmed empirically fails on vests).
 
-The async function signature is preserved so `pipeline.py` doesn't change
-beyond passing the helmet detection list through.
+It only evaluates helmet + vest (no glasses/cap, which require the Gemini VLM).
+The async function signature matches gemini_service so `pipeline.py` can swap
+backends transparently.
 """
 import logging
 from pathlib import Path

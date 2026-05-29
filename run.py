@@ -2,8 +2,9 @@
 run.py — Single-command launcher for VisionAI.
 
 Usage:
-    python run.py           # checks Ollama + builds frontend + starts server
+    python run.py           # builds frontend + starts server (YOLOv8 + Google Gemini)
     python run.py --dev     # skips frontend build (assumes already built)
+    python run.py --local   # offline mode: YOLOv8 + local computer-vision (no Gemini)
 """
 import argparse
 import json
@@ -34,73 +35,6 @@ def is_port_open(port: int) -> bool:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.settimeout(0.5)
         return s.connect_ex(("127.0.0.1", port)) == 0
-
-
-def ensure_ollama_running() -> bool:
-    """Ensure the Ollama local service is running. Starts it if offline."""
-    if is_port_open(11434):
-        print("✓  Ollama is already running.")
-        return True
-
-    print("⚠️  Ollama is not running. Starting 'ollama serve' in background...")
-    try:
-        creationflags = 0
-        if os.name == "nt":
-            # CREATE_NO_WINDOW flags to prevent popping up console windows
-            creationflags = 0x08000000
-
-        subprocess.Popen(
-            ["ollama", "serve"],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            creationflags=creationflags,
-        )
-
-        # Wait up to 15 seconds for Ollama to boot
-        for _ in range(30):
-            time.sleep(0.5)
-            if is_port_open(11434):
-                print("✓  Ollama started successfully.")
-                return True
-        print("✗  Ollama took too long to start. Please run 'ollama serve' manually.")
-        return False
-    except Exception as e:
-        print(f"✗  Failed to auto-start Ollama: {e}")
-        print("Please ensure Ollama is installed and running on port 11434.")
-        return False
-
-
-def ensure_llava_model() -> bool:
-    """Check if the LLaVA model is downloaded. Pulls it if absent."""
-    model_name = "gemma3:4b"
-    try:
-        req = urllib.request.urlopen("http://127.0.0.1:11434/api/tags", timeout=5)
-        data = json.loads(req.read().decode("utf-8"))
-        models = data.get("models", [])
-        downloaded = [m["name"] for m in models]
-
-        # Match exact name or base name
-        if any(
-            m.startswith(model_name) or model_name.startswith(m.split(":")[0])
-            for m in downloaded
-        ):
-            print(f"✓  Ollama model '{model_name}' is ready.")
-            return True
-
-        print(
-            f"📥  Model '{model_name}' not found. Downloading it now (approx. 4.7 GB)..."
-        )
-        print("This may take several minutes depending on your internet connection.")
-        # Run pull synchronously so the user sees the native progress bar
-        subprocess.run(["ollama", "pull", model_name], check=True)
-        print(f"✓  Model '{model_name}' pulled successfully.")
-        return True
-    except Exception as e:
-        print(f"⚠️  Could not verify or pull Ollama model: {e}")
-        print(
-            f"Please ensure you can run: ollama pull {model_name} in your terminal."
-        )
-        return False
 
 
 def build_frontend() -> None:
@@ -193,18 +127,19 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="VisionAI launcher")
     parser.add_argument("--dev", action="store_true", help="Skip frontend build")
     parser.add_argument(
-        "--ollama",
+        "--local",
         action="store_true",
-        help="Use the Ollama VLM backend instead of YOLO-World",
+        help="Offline mode: YOLOv8 + local computer-vision instead of Google Gemini",
     )
     args = parser.parse_args()
 
-    use_ollama = args.ollama or os.environ.get("DETECTION_MODE", "").lower() == "ollama"
-    if use_ollama:
-        os.environ["DETECTION_MODE"] = "ollama"
-        print("🛡️  Detection mode: OLLAMA (gemma3:4b)")
+    use_local = args.local or os.environ.get("DETECTION_MODE", "").lower() == "yolo"
+    if use_local:
+        os.environ["DETECTION_MODE"] = "yolo"
+        print("🛡️  Detection mode: LOCAL (YOLOv8 + computer-vision, offline)")
     else:
-        print("🛡️  Detection mode: YOLO-World (default; pass --ollama to switch)")
+        os.environ["DETECTION_MODE"] = "gemini"
+        print("🛡️  Detection mode: GEMINI (YOLOv8 + Google Gemini 2.5 Flash)")
 
     print("Checking system requirements...")
 
@@ -212,15 +147,7 @@ def main() -> None:
     if is_port_open(8000):
         print("\n💡  VisionAI server is already active on http://localhost:8000 !")
         print("🚀  No need to start another instance. Just open http://localhost:8000 in your browser.")
-        if use_ollama and ensure_ollama_running():
-            ensure_llava_model()
         return
-
-    if use_ollama:
-        if ensure_ollama_running():
-            ensure_llava_model()
-    else:
-        print("✓  Ollama not needed in YOLO mode — skipping checks.")
 
     if not args.dev:
         build_frontend()
@@ -230,3 +157,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
