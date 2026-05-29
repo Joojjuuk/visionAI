@@ -18,6 +18,16 @@ class Settings(BaseSettings):
     confidence_threshold: float = 0.35
     max_upload_size_mb: int = 10
 
+    # Comma-separated list of allowed CORS origins for the split deploy
+    # (frontend on Vercel calling this backend on another host). Add your
+    # Vercel URL via CORS_ORIGINS, e.g. "https://visionai.vercel.app".
+    # Use "*" to allow any origin.
+    cors_origins: str = "http://localhost:5173,http://localhost:5174,http://localhost:8000"
+
+    @property
+    def cors_origin_list(self) -> list[str]:
+        return [o.strip() for o in self.cors_origins.split(",") if o.strip()]
+
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"

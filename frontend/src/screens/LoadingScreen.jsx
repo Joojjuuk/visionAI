@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import { Icon } from "../components/Icons.jsx";
+import { apiUrl } from "../api.js";
 
 const STEPS = [
   { id: "decode",  label: "Decodificando imagem",        weight: 0.05 },
@@ -57,7 +58,7 @@ export default function LoadingScreen({ file, onDone }) {
     const formData = new FormData();
     formData.append("file", file);
 
-    fetch("/api/analyze", { method: "POST", body: formData, signal })
+    fetch(apiUrl("/api/analyze"), { method: "POST", body: formData, signal })
       .then(async (res) => {
         if (!res.ok) {
           const err = await res.json().catch(() => ({ detail: res.statusText }));

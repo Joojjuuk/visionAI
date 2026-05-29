@@ -13,3 +13,10 @@ frontend/dist/
 
 # Env
 .env
+.env.local
+.env.*.local
+frontend/.env
+frontend/.env.local
+frontend/.env.*.local
+!*.env.example
+!.env.example

@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo } from "react";
 import { Icon } from "../components/Icons.jsx";
 import BoundingBoxes from "../components/BoundingBoxes.jsx";
+import { apiUrl } from "../api.js";
 
 function computeStatus(p) {
   const helmetOk = p.helmet;
@@ -22,7 +23,7 @@ function computeStatus(p) {
 export default function ResultsScreen({ file, result, onReset, markingStyle, showTags }) {
   const detections = result?.detections ?? [];
   const stats = result?.stats ?? { total: 0, ok: 0, bad: 0, pct: 0, avg_confidence: 0 };
-  const imageUrl = result?.image_url ?? null; // served by FastAPI /uploads/...
+  const imageUrl = result?.image_url ? apiUrl(result.image_url) : null; // served by the backend /uploads/...
 
   const [activeId, setActiveId] = useState(null);
   const [hoverId, setHoverId] = useState(null);
